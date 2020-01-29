@@ -1,0 +1,160 @@
+```
+PEP: 9999
+Title: Runtime Access to Generic Type Parameters
+Author: Saul Shanabrook <s.shanabrook@gmail.com
+Status: Draft
+Type: Standards Track
+Content-Type: text/x-rst
+Created: xxx
+Post-History: xx
+```
+
+
+# Abstract
+
+
+This PEP propses allowing runtime access to the arguments of type application,
+also called type parameters, to generic classes in their classmethods and init methods.
+
+# Motivation
+
+
+This would allow a common syntax to create strongly typed collections to be analyzed by tools like MyPy and also used at runtime. Many built in collections do not need this feature, because at runtime they can be heterogeneous.
+
+If this was supported, we would be able to use it in array and machine learning libraries to specify the inner type of collections. For example:
+
+
+```python
+# pick up dtype in class type application
+numpy.ndarray[numpy.float16]((2, 2))
+# instead of currently have to specify it as argument
+numpy.ndarray((2, 2), dtype=numpy.float16)
+# Would then make it easier to type getitem access to inner type
+
+
+# Also should allow classmethods to also use the type applications
+numpy.ndarray[numpy.float16].arange(10)
+# instead of passing in as arg
+numpy.arange(10, dtype=numpy.float16])
+```
+
+Any class that inherits from `typing.Generic`
+would be able to access it's parametrized types in any
+of its classmethods or in its `__init__` method. In the
+classmethod, these would be accessable as the
+`__parameters__` attribute on the `cls`. On the constructor,
+you would call a `typing.get_parameters()` function.
+
+# Rationale
+
+Attaching the parameters to the `cls`, on classmethods,
+is natural since  that is where they live ont the
+original type. For example `MyGeneric[int].__parameters__ == (int,)`.
+
+Inside the constructor, there isn't another place to put
+the parameters, besides on the type of `self` or passed in as arguments. Making them available on the type would
+raise more issues since then each instance of a generic type with different parameters would have a different type.
+
+Adding a global function like this also opens the door to support this on functions, if/when they gain type application.
+
+# Specification
+
+1. Add a `get_parameters` function to `typing` that returns `None`, unless you are in the constructor of a class that inherits from `typing.Generic` that has had type parameters specified.
+2. Make sure the class that is passed to classmethods on types that inherit from `typing.Generic` has a `__parameters__` attribute that returns the type parameters applied, in the manner described in PEP 585.
+
+
+# Backwards Compatibility
+
+
+Any existing classes with a `__parameters__` attribute that inherit from `typing.Generic` will break.
+
+
+# Security Implications
+
+None.
+
+
+# How to Teach This
+
+Unknown.
+
+
+# Reference Implementation
+
+Here is an example implementation:
+
+
+```python
+Parameters =  Union[Type, Tuple[Type, ...]]
+
+_parameters = contextvars.ContextVar('parameters', default=None)
+
+    
+def get_parameters() -> Union[Parameters, None]: 
+    return _parameters.get()
+
+
+@dataclasses.dataclass
+class GenericAlias:
+    __origin__: Type
+    __parameters__: Parameters
+
+    def __getattr__(self, name: str) -> Any:
+        possible_descriptor = self.__origin__.__getattribute__(self.__origin__, name)
+        if hasattr(possible_descriptor, "__get__"):
+            return possible_descriptor.__get__(None, self)
+        return getattr(self.__origin__, attr)
+
+    def __call__(self, *args: Any, **kwds: Any) -> Any:
+        token = _parameters.set(self.__parameters__)
+        res = self.__origin__(*args, **kwds)
+        _parameters.reset(token)
+        return res
+
+    
+class MyGeneric:
+    def __class_getitem__(cls, subscript):
+        return GenericAlias(cls, subscript)
+
+    
+    
+class Array(MyGeneric):
+    def __init__(self):
+        self.params = get_parameters()
+
+    @classmethod
+    def arange(cls):
+        return cls.__parameters__
+
+assert Array[int].arange() == int
+assert Array[int]().params == int
+```
+
+# Rejected Ideas
+
+## Pass them as args,kwargs
+
+The simplest would be to pass in the extra typing arguments as a kwarg to the classmethod or init function. However, this would break any existing classes that inherit from typing.Generic and it would cause some confusion to users, I believe who most likely wouldn't want these type applications in most cases.
+
+We could allow an argument to `typing.Generic` that somehow triggers this behavior on and off, but overall this seems pretty messy.
+
+
+## Open Issues
+
+
+* We could just include the classmethod option at first,
+ since it doesn't require any global state. The constructor implementation could come later.
+
+## References
+
+* [conversation on whether to allow type parameters on functions at last PyCon](https://paper.dropbox.com/doc/Typing-and-mypy-usability--AtV9rppf4zifwroZanUhqOKKAg-58lNM498db1NalRQsme4U)
+* [Original suggestion that this be a seperate PEP apart from 585](https://mail.python.org/archives/list/typing-sig@python.org/message/TQQRXNXY5KU2BG3Y7LPVN4QOSTRZZ2L6/)
+* [implementation of pep 585](https://github.com/python/cpython/pull/18239) that could be ammended to include part of this.
+
+## Copyright
+
+
+This document is placed in the public domain or under the
+CC0-1.0-Universal license, whichever is more permissive.
+  
+  
